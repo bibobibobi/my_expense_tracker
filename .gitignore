@@ -1,0 +1,10 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Data (如果你希望把自己的記帳紀錄保密，不要上傳 csv)
+# 如果你希望這是一個 "範例專案"，可以不忽略 csv，但通常建議忽略
+expenses.csv
+
+# Mac system file
+.DS_Store
