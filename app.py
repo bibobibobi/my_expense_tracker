@@ -20,29 +20,46 @@ def go_to_home():
     st.rerun()
 
 # --- CSS 與 JS 魔法區 ---
-# 1. 隱藏輸入框提示
-# 2. 隱藏數字 +/- 號
-# 3. 嘗試禁用日期輸入框的鍵盤 (Mobile Friendly)
 st.markdown("""
 <style>
-/* 基本樣式調整 */
+/* 隱藏不必要的元素 */
 div[data-testid="InputInstructions"] > span:nth-child(1) { display: none; }
-.block-container { padding-top: 4rem; }
+.block-container { padding-top: 3rem; }
 
-/* 隱藏數字輸入框的箭頭 */
+/* 隱藏數字輸入框箭頭 */
 input::-webkit-outer-spin-button,
 input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
 
-/* 讓 Segmented Control (按鈕列) 在手機上更好按 */
-div[data-testid="stSegmentedControl"] button {
+/* 優化手機上的列表顯示 */
+div[data-testid="column"] {
+    align-self: center; /* 讓內容垂直置中 */
+}
+
+/* 讓刪除按鈕變紅色且顯眼 */
+button[kind="secondary"] {
+    border-color: transparent;
+    color: #ff4b4b;
+}
+button[kind="secondary"]:hover {
+    border-color: #ff4b4b;
+    background-color: #ffebeb;
+}
+
+/* 調整日期標題的間距 */
+.date-header {
+    font-size: 1.1rem;
     font-weight: bold;
+    color: #555;
+    margin-top: 15px;
+    margin-bottom: 5px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# 注入 JS 來設定日期輸入框為 "不可打字" (嘗試防止鍵盤彈出)
-# 注意：這在某些瀏覽器或 Streamlit Cloud 的安全性限制下可能會有不同表現
+# JS: 防止手機鍵盤彈出 (日期選擇)
 components.html("""
 <script>
     window.parent.document.addEventListener('click', () => {
@@ -69,17 +86,26 @@ def load_data():
 def save_data(df):
     df.to_csv(DATA_FILE, index=False)
 
+def delete_record(index_to_delete):
+    df = load_data()
+    # 確保 index 存在 (避免過濾後 index 對不上的問題)
+    if index_to_delete in df.index:
+        df = df.drop(index_to_delete)
+        save_data(df)
+        st.toast("已刪除該筆紀錄", icon="🗑️")
+        st.rerun()
+
 # ==========================================
 #  頁面 A: 首頁
 # ==========================================
 def show_home_page():
     df = load_data()
     
-    col_header, col_btn = st.columns([8, 2])
+    col_header, col_btn = st.columns([7, 3])
     with col_header:
         st.subheader("我的記帳本")
     with col_btn:
-        if st.button("➕ 新增一筆", use_container_width=True, type="primary"):
+        if st.button("➕ 新增", use_container_width=True, type="primary"):
             go_to_add()
 
     if not df.empty:
@@ -90,30 +116,27 @@ def show_home_page():
         total_card = df[df["類型"] == "信用卡"]["金額"].sum()
         
         m1, m2 = st.columns(2)
-        m1.metric("💵 現金總支出", f"${total_cash:,.0f}")
-        m2.metric("💳 信用卡總支出", f"${total_card:,.0f}")
+        m1.metric("💵 現金", f"${total_cash:,.0f}")
+        m2.metric("💳 信用卡", f"${total_card:,.0f}")
 
-        st.divider()
-
-        # --- 過濾器 (改用按鈕式) ---
-        st.write("📊 篩選條件")
-        
-        # 月份選擇 (因為月份很多，維持下拉選單比較合適，或者可以用 Slider，但下拉最精準)
+        # --- 篩選區 ---
+        st.write("") # 空行
         available_months = df["日期"].dt.to_period("M").unique().astype(str)
-        # 為了美觀，將月份選擇和類型選擇分開
         
-        selected_month = st.selectbox("選擇月份", options=["所有時間"] + sorted(available_months, reverse=True))
-        
-        # [更新點] 顯示類型：改用 Segmented Control (按鈕列)
-        # selection_mode="multi" 讓使用者可以複選
-        selected_type = st.segmented_control(
-            "顯示帳戶類型",
-            options=["現金", "信用卡"],
-            default=["現金", "信用卡"],
-            selection_mode="multi"
-        )
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            selected_month = st.selectbox("月份", options=["所有時間"] + sorted(available_months, reverse=True), label_visibility="collapsed")
+        with c2:
+            # 簡化顯示，只顯示文字按鈕
+            selected_type = st.segmented_control(
+                "類型",
+                options=["現金", "信用卡"],
+                default=["現金", "信用卡"],
+                selection_mode="multi",
+                label_visibility="collapsed"
+            )
 
-        # --- 應用過濾 ---
+        # --- 處理過濾資料 ---
         df_filtered = df.copy()
         
         if selected_month != "所有時間":
@@ -124,58 +147,79 @@ def show_home_page():
         else:
             df_filtered = df_filtered[df_filtered["類型"].isin(selected_type)]
 
-        # --- 列表與刪除 ---
+        # --- [核心修改] 列表顯示邏輯 ---
         if not df_filtered.empty:
             df_filtered = df_filtered.sort_values(by="日期", ascending=False)
-            df_display = df_filtered.copy()
-            df_display["日期"] = df_display["日期"].dt.strftime("%Y-%m-%d")
-            df_display.insert(0, "刪除", False)
-
-            # 手機上列表標題如果太擠，可以用 caption 提示
-            st.caption("勾選以刪除紀錄")
             
-            edited_df = st.data_editor(
-                df_display,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "刪除": st.column_config.CheckboxColumn("刪", width="small"),
-                    "日期": st.column_config.TextColumn("日期", width="medium"),
-                    "項目": st.column_config.TextColumn("項目", width="large"),
-                    "類型": st.column_config.TextColumn("類型", width="small"),
-                    "金額": st.column_config.NumberColumn("金額", format="$%d"),
-                    "備註": st.column_config.TextColumn("備註", default="")
-                },
-                disabled=["日期", "項目", "類型", "金額", "備註"]
-            )
+            # 1. 先抓出所有不重複的日期 (排序過)
+            unique_dates = df_filtered["日期"].dt.strftime("%Y-%m-%d").unique()
+            
+            st.write("") # 加點間距
 
-            if edited_df["刪除"].any():
-                to_delete_indices = edited_df[edited_df["刪除"]].index.tolist()
-                if st.button(f"🗑️ 確認刪除 ({len(to_delete_indices)} 筆)", type="secondary", use_container_width=True):
-                    df_new = df.drop(to_delete_indices)
-                    save_data(df_new)
-                    st.success("刪除成功！")
-                    st.rerun()
+            # 2. 針對每一天，印出一個區塊
+            for date_str in unique_dates:
+                # 顯示日期標題
+                # 轉換成 datetime 物件來取得星期幾
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                weekday_str = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][date_obj.weekday()]
+                
+                # 使用 HTML 自定義樣式顯示日期
+                st.markdown(f'<div class="date-header">{date_str} ({weekday_str})</div>', unsafe_allow_html=True)
+                
+                # 3. 抓出這那一天的所有消費
+                day_records = df_filtered[df_filtered["日期"].dt.strftime("%Y-%m-%d") == date_str]
+                
+                for index, row in day_records.iterrows():
+                    # 使用 columns 來排版：項目 | 圖示 | 金額 | 刪除
+                    # 比例分配：項目佔寬一點，其他固定
+                    c_item, c_icon, c_amount, c_del = st.columns([5, 1.5, 2.5, 1.2])
+                    
+                    with c_item:
+                        st.write(f"**{row['項目']}**")
+                        if row['備註']:
+                            st.caption(row['備註'])
+                    
+                    with c_icon:
+                        # 用 Emoji 代表類型，節省空間
+                        icon = "💵" if row['類型'] == "現金" else "💳"
+                        st.write(icon)
+                        
+                    with c_amount:
+                        st.write(f"${row['金額']:,}")
+                    
+                    with c_del:
+                        # 每個按鈕需要唯一的 key，我們用 "del_" + index
+                        if st.button("✕", key=f"del_{index}", help="刪除此紀錄"):
+                            delete_record(index)
+                    
+                    # 加一條極細的分隔線，區分每一筆
+                    st.markdown("<hr style='margin: 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+            
+            # 底部留白
+            st.write("", "")
+            
         else:
             if not selected_type:
-                st.warning("⚠️ 請至少點選一種帳戶類型 (現金/信用卡)")
+                st.warning("請選擇顯示類型")
             else:
                 st.info("📭 查無資料")
     else:
-        st.info("目前沒有紀錄，點擊右上角新增！")
+        st.info("點擊右上角「新增」開始記帳！")
 
 # ==========================================
 #  頁面 B: 新增消費
 # ==========================================
 def show_add_page():
-    st.button("⬅️ 返回首頁", on_click=go_to_home)
-    st.title("➕ 新增消費")
+    # 頂部導航條
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        st.button("⬅", on_click=go_to_home)
+    with c2:
+        st.subheader("新增消費")
     
     with st.form("add_form", clear_on_submit=True):
         date = st.date_input("日期", datetime.now())
         
-        # [更新點] 支付方式：改用 Segmented Control (按鈕列)
-        # 比 Radio 更像 App 的切換按鈕
         category = st.segmented_control(
             "支付方式", 
             options=["現金", "信用卡"],
@@ -183,16 +227,13 @@ def show_add_page():
             selection_mode="single"
         )
         
-        item = st.text_input("項目", placeholder="例如: 早餐")
-        
+        item = st.text_input("項目", placeholder="例如: 午餐")
         amount = st.number_input("金額", min_value=0, step=1, value=None, placeholder="輸入金額")
+        note = st.text_area("備註 (選填)", height=60)
         
-        note = st.text_area("備註 (選填)", height=80)
-        
-        submitted = st.form_submit_button("💾 儲存並返回", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("💾 儲存", type="primary", use_container_width=True)
 
         if submitted:
-            # 檢查 category 是否為 None (雖然有 default，但預防萬一)
             if not category:
                 st.error("⚠️ 請選擇支付方式")
             elif item and amount is not None and amount > 0:
