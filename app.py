@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import os
-import uuid # 引入 UUID 來產生唯一 ID
+import uuid
 from datetime import datetime
 
 # --- 設定頁面資訊 ---
@@ -34,27 +34,32 @@ input[type=number] { -moz-appearance: textfield; }
 
 /* 日期標題樣式 */
 .date-header {
-    font-size: 1.0rem;
+    font-size: 1.1rem;
     font-weight: bold;
     color: #444;
     background-color: #f0f2f6;
     padding: 8px 12px;
     border-radius: 8px;
     margin-top: 20px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 
-/* 列表項目文字樣式 */
+/* [修改] 列表項目文字放大 */
 .list-item-text {
-    font-size: 1rem;
+    font-size: 1.25rem; /* 加大字體 (約20px) */
+    font-weight: 600;   /* 加粗 */
     line-height: 1.5;
-}
-.list-item-sub {
-    font-size: 0.8rem;
-    color: #888;
+    color: #1f1f1f;
 }
 
-/* 調整 Checkbox 大小與位置，讓它好按一點 */
+/* [修改] 備註文字放大 */
+.list-item-sub {
+    font-size: 1rem;    /* 加大備註 (約16px) */
+    color: #666;
+    margin-top: 2px;
+}
+
+/* 調整 Checkbox */
 div[data-testid="stCheckbox"] {
     display: flex;
     justify-content: center;
@@ -63,20 +68,45 @@ div[data-testid="stCheckbox"] {
 </style>
 """, unsafe_allow_html=True)
 
-# JS: 防止手機鍵盤彈出
+# JS: 1. 防止日期鍵盤彈出 2. [新增] 輸入完項目後自動跳到金額
 components.html("""
 <script>
-    window.parent.document.addEventListener('click', () => {
-        const dateInputs = window.parent.document.querySelectorAll('div[data-testid="stDateInput"] input');
+    // 定義一個函數來檢查並綁定事件
+    function setupInteractions() {
+        const doc = window.parent.document;
+        
+        // 1. 日期輸入框優化
+        const dateInputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
         dateInputs.forEach(input => {
             input.setAttribute('inputmode', 'none'); 
             input.setAttribute('autocomplete', 'off');
         });
-    });
+
+        // 2. 自動跳轉焦點 (項目 -> 金額)
+        // 透過 aria-label 找到對應的輸入框
+        const itemInput = doc.querySelector('input[aria-label="項目"]');
+        const amountInput = doc.querySelector('input[aria-label="金額"]');
+
+        if (itemInput && amountInput && !itemInput.dataset.enterBound) {
+            itemInput.addEventListener('keydown', (e) => {
+                // 如果按下 Enter (電腦) 或 Go/Next (手機)
+                if (e.key === 'Enter' || e.keyCode === 13) {
+                    e.preventDefault(); // 阻止表單預設提交
+                    amountInput.focus(); // 強制跳到金額欄位
+                }
+            });
+            // 標記已綁定，避免重複綁定
+            itemInput.dataset.enterBound = 'true';
+        }
+    }
+
+    // 因為 Streamlit 會動態渲染，我們設定一個定時器每秒檢查一次
+    // 這樣可以確保切換頁面後功能依然有效
+    setInterval(setupInteractions, 1000);
 </script>
 """, height=0, width=0)
 
-# --- 檔案處理 (含 ID 遷移邏輯) ---
+# --- 檔案處理 ---
 DATA_FILE = "expenses.csv"
 
 def load_data():
@@ -84,13 +114,9 @@ def load_data():
         return pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
     
     df = pd.read_csv(DATA_FILE)
-    
-    # [修復] 資料遷移：確保舊資料也有 ID
     if "ID" not in df.columns:
-        # 為每一列產生一個新的 UUID
         df["ID"] = [str(uuid.uuid4()) for _ in range(len(df))]
         save_data(df)
-        
     if "備註" in df.columns:
         df["備註"] = df["備註"].fillna("")
     return df
@@ -100,7 +126,6 @@ def save_data(df):
 
 def delete_record(record_id):
     df = load_data()
-    # 使用 ID 來刪除，而不是 Index
     df = df[df["ID"] != record_id]
     save_data(df)
     st.toast("已刪除", icon="🗑️")
@@ -112,7 +137,6 @@ def delete_record(record_id):
 def show_home_page():
     df = load_data()
     
-    # 標題區
     col_header, col_btn = st.columns([7, 3], vertical_alignment="center")
     with col_header:
         st.subheader("我的記帳本")
@@ -165,29 +189,21 @@ def show_home_page():
             st.write("") 
 
             for date_str in unique_dates:
-                # 1. 顯示日期標題 (單獨一行)
                 date_obj = datetime.strptime(date_str, "%Y-%m-%d")
                 weekday_str = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][date_obj.weekday()]
                 st.markdown(f'<div class="date-header">{date_str} ({weekday_str})</div>', unsafe_allow_html=True)
                 
-                # 2. 顯示當天的紀錄
                 day_records = df_filtered[df_filtered["日期"].dt.strftime("%Y-%m-%d") == date_str]
                 
                 for _, row in day_records.iterrows():
-                    # [重點修改] 版面配置：改為兩欄，確保手機不換行
-                    # 左邊 (85%)：所有文字資訊 (類型 + 項目 + 金額)
-                    # 右邊 (15%)：刪除框
                     c_info, c_del = st.columns([5.5, 1], vertical_alignment="center")
-                    
                     record_id = row['ID']
                     
                     with c_info:
-                        # 組合字串：圖示 | 項目 | 金額
                         icon = "💵" if row['類型'] == "現金" else "💳"
-                        # 備註處理
                         note_html = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
                         
-                        # 使用 HTML 渲染讓它們在同一行
+                        # [修改] 使用新的 class list-item-text
                         st.markdown(
                             f"""
                             <div class="list-item-text">
@@ -199,10 +215,8 @@ def show_home_page():
                         )
 
                     with c_del:
-                        # [重點修復] Key 使用唯一的 ID，避免刪除後勾選狀態錯亂
                         is_checked = st.checkbox("刪", key=f"chk_{record_id}", label_visibility="collapsed")
                     
-                    # 確認刪除區域 (如果勾選才出現)
                     if is_checked:
                         with st.container():
                             col_ask, col_yes = st.columns([3, 1], vertical_alignment="center")
@@ -211,7 +225,6 @@ def show_home_page():
                                 delete_record(record_id)
                     
                     st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
-            
             st.write("", "")
         else:
             if not selected_type:
@@ -240,6 +253,7 @@ def show_add_page():
             selection_mode="single"
         )
         
+        # [關鍵] 這裡的 label 文字必須與 JS 中的 aria-label 選擇器一致
         item = st.text_input("項目", placeholder="例如: 午餐")
         amount = st.number_input("金額", min_value=0, step=1, value=None, placeholder="輸入金額")
         note = st.text_area("備註 (選填)", height=60)
@@ -250,7 +264,6 @@ def show_add_page():
             if not category:
                 st.error("⚠️ 請選擇支付方式")
             elif item and amount is not None and amount > 0:
-                # [新增] 儲存時生成唯一 ID
                 new_data = pd.DataFrame({
                     "ID": [str(uuid.uuid4())],
                     "日期": [date],
