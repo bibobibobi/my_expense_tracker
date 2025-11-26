@@ -31,30 +31,21 @@ input::-webkit-outer-spin-button,
 input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
 
-/* 優化手機上的列表顯示 */
-div[data-testid="column"] {
-    align-self: center; /* 讓內容垂直置中 */
-}
-
-/* 讓刪除按鈕變紅色且顯眼 */
-button[kind="secondary"] {
-    border-color: transparent;
-    color: #ff4b4b;
-}
-button[kind="secondary"]:hover {
-    border-color: #ff4b4b;
-    background-color: #ffebeb;
-}
-
-/* 調整日期標題的間距 */
+/* 日期標題樣式 */
 .date-header {
     font-size: 1.1rem;
     font-weight: bold;
-    color: #555;
+    color: #333;
+    background-color: #f0f2f6;
+    padding: 5px 10px;
+    border-radius: 5px;
     margin-top: 15px;
-    margin-bottom: 5px;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 5px;
+    margin-bottom: 10px;
+}
+
+/* 調整刪除確認區塊的樣式 */
+div[data-testid="stAlert"] {
+    padding: 0.5rem;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -88,11 +79,10 @@ def save_data(df):
 
 def delete_record(index_to_delete):
     df = load_data()
-    # 確保 index 存在 (避免過濾後 index 對不上的問題)
     if index_to_delete in df.index:
         df = df.drop(index_to_delete)
         save_data(df)
-        st.toast("已刪除該筆紀錄", icon="🗑️")
+        st.toast("已刪除", icon="🗑️")
         st.rerun()
 
 # ==========================================
@@ -101,7 +91,8 @@ def delete_record(index_to_delete):
 def show_home_page():
     df = load_data()
     
-    col_header, col_btn = st.columns([7, 3])
+    # 標題區
+    col_header, col_btn = st.columns([7, 3], vertical_alignment="center")
     with col_header:
         st.subheader("我的記帳本")
     with col_btn:
@@ -120,14 +111,13 @@ def show_home_page():
         m2.metric("💳 信用卡", f"${total_card:,.0f}")
 
         # --- 篩選區 ---
-        st.write("") # 空行
+        st.write("")
         available_months = df["日期"].dt.to_period("M").unique().astype(str)
         
         c1, c2 = st.columns([1, 1])
         with c1:
             selected_month = st.selectbox("月份", options=["所有時間"] + sorted(available_months, reverse=True), label_visibility="collapsed")
         with c2:
-            # 簡化顯示，只顯示文字按鈕
             selected_type = st.segmented_control(
                 "類型",
                 options=["現金", "信用卡"],
@@ -136,7 +126,7 @@ def show_home_page():
                 label_visibility="collapsed"
             )
 
-        # --- 處理過濾資料 ---
+        # --- 列表顯示邏輯 ---
         df_filtered = df.copy()
         
         if selected_month != "所有時間":
@@ -147,55 +137,56 @@ def show_home_page():
         else:
             df_filtered = df_filtered[df_filtered["類型"].isin(selected_type)]
 
-        # --- [核心修改] 列表顯示邏輯 ---
         if not df_filtered.empty:
             df_filtered = df_filtered.sort_values(by="日期", ascending=False)
-            
-            # 1. 先抓出所有不重複的日期 (排序過)
             unique_dates = df_filtered["日期"].dt.strftime("%Y-%m-%d").unique()
             
-            st.write("") # 加點間距
+            st.write("") 
 
-            # 2. 針對每一天，印出一個區塊
             for date_str in unique_dates:
-                # 顯示日期標題
-                # 轉換成 datetime 物件來取得星期幾
+                # 1. 顯示日期標題
                 date_obj = datetime.strptime(date_str, "%Y-%m-%d")
                 weekday_str = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][date_obj.weekday()]
-                
-                # 使用 HTML 自定義樣式顯示日期
                 st.markdown(f'<div class="date-header">{date_str} ({weekday_str})</div>', unsafe_allow_html=True)
                 
-                # 3. 抓出這那一天的所有消費
+                # 2. 顯示當天的紀錄
                 day_records = df_filtered[df_filtered["日期"].dt.strftime("%Y-%m-%d") == date_str]
                 
                 for index, row in day_records.iterrows():
-                    # 使用 columns 來排版：項目 | 圖示 | 金額 | 刪除
-                    # 比例分配：項目佔寬一點，其他固定
-                    c_item, c_icon, c_amount, c_del = st.columns([5, 1.5, 2.5, 1.2])
+                    # 排版：圖示 | 項目 | 金額 | 刪除框 (垂直置中)
+                    c_icon, c_item, c_amount, c_del = st.columns([1.2, 5, 2.5, 1], vertical_alignment="center")
                     
+                    with c_icon:
+                        # 顯示類型
+                        st.write("💵" if row['類型'] == "現金" else "💳")
+                        
                     with c_item:
+                        # 顯示項目與備註
                         st.write(f"**{row['項目']}**")
                         if row['備註']:
                             st.caption(row['備註'])
-                    
-                    with c_icon:
-                        # 用 Emoji 代表類型，節省空間
-                        icon = "💵" if row['類型'] == "現金" else "💳"
-                        st.write(icon)
-                        
+                            
                     with c_amount:
+                        # 顯示金額
                         st.write(f"${row['金額']:,}")
-                    
+                        
                     with c_del:
-                        # 每個按鈕需要唯一的 key，我們用 "del_" + index
-                        if st.button("✕", key=f"del_{index}", help="刪除此紀錄"):
-                            delete_record(index)
+                        # 刪除框框 (Checkbox)
+                        # key 必須唯一，所以加上 index
+                        is_checked = st.checkbox("刪", key=f"del_chk_{index}", label_visibility="collapsed")
                     
-                    # 加一條極細的分隔線，區分每一筆
-                    st.markdown("<hr style='margin: 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+                    # 邏輯：如果勾選了刪除框，就顯示確認按鈕
+                    if is_checked:
+                        with st.container():
+                            # 用一個紅色區塊提醒
+                            alert_col1, alert_col2 = st.columns([3, 1], vertical_alignment="center")
+                            alert_col1.error("確定刪除此筆?")
+                            if alert_col2.button("是", key=f"confirm_del_{index}", type="primary"):
+                                delete_record(index)
+                    
+                    # 分隔線
+                    st.markdown("<hr style='margin: 5px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
             
-            # 底部留白
             st.write("", "")
             
         else:
@@ -210,12 +201,12 @@ def show_home_page():
 #  頁面 B: 新增消費
 # ==========================================
 def show_add_page():
-    # 頂部導航條
-    c1, c2 = st.columns([1, 5])
-    with c1:
-        st.button("⬅", on_click=go_to_home)
-    with c2:
-        st.subheader("新增消費")
+    # 使用 container 來包裝頂部按鈕，讓它看起來像一個完整的區塊
+    with st.container():
+        # [更新] 返回按鈕改為全寬的按鈕框
+        st.button("🔙 返回首頁", on_click=go_to_home, use_container_width=True)
+        
+    st.title("➕ 新增消費")
     
     with st.form("add_form", clear_on_submit=True):
         date = st.date_input("日期", datetime.now())
