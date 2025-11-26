@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import os
+import uuid # 引入 UUID 來產生唯一 ID
 from datetime import datetime
 
 # --- 設定頁面資訊 ---
@@ -33,24 +34,36 @@ input[type=number] { -moz-appearance: textfield; }
 
 /* 日期標題樣式 */
 .date-header {
-    font-size: 1.1rem;
+    font-size: 1.0rem;
     font-weight: bold;
-    color: #333;
+    color: #444;
     background-color: #f0f2f6;
-    padding: 5px 10px;
-    border-radius: 5px;
-    margin-top: 15px;
-    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-top: 20px;
+    margin-bottom: 8px;
 }
 
-/* 調整刪除確認區塊的樣式 */
-div[data-testid="stAlert"] {
-    padding: 0.5rem;
+/* 列表項目文字樣式 */
+.list-item-text {
+    font-size: 1rem;
+    line-height: 1.5;
+}
+.list-item-sub {
+    font-size: 0.8rem;
+    color: #888;
+}
+
+/* 調整 Checkbox 大小與位置，讓它好按一點 */
+div[data-testid="stCheckbox"] {
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# JS: 防止手機鍵盤彈出 (日期選擇)
+# JS: 防止手機鍵盤彈出
 components.html("""
 <script>
     window.parent.document.addEventListener('click', () => {
@@ -63,13 +76,21 @@ components.html("""
 </script>
 """, height=0, width=0)
 
-# --- 檔案處理 ---
+# --- 檔案處理 (含 ID 遷移邏輯) ---
 DATA_FILE = "expenses.csv"
 
 def load_data():
     if not os.path.exists(DATA_FILE):
-        return pd.DataFrame(columns=["日期", "項目", "類型", "金額", "備註"])
+        return pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
+    
     df = pd.read_csv(DATA_FILE)
+    
+    # [修復] 資料遷移：確保舊資料也有 ID
+    if "ID" not in df.columns:
+        # 為每一列產生一個新的 UUID
+        df["ID"] = [str(uuid.uuid4()) for _ in range(len(df))]
+        save_data(df)
+        
     if "備註" in df.columns:
         df["備註"] = df["備註"].fillna("")
     return df
@@ -77,13 +98,13 @@ def load_data():
 def save_data(df):
     df.to_csv(DATA_FILE, index=False)
 
-def delete_record(index_to_delete):
+def delete_record(record_id):
     df = load_data()
-    if index_to_delete in df.index:
-        df = df.drop(index_to_delete)
-        save_data(df)
-        st.toast("已刪除", icon="🗑️")
-        st.rerun()
+    # 使用 ID 來刪除，而不是 Index
+    df = df[df["ID"] != record_id]
+    save_data(df)
+    st.toast("已刪除", icon="🗑️")
+    st.rerun()
 
 # ==========================================
 #  頁面 A: 首頁
@@ -144,7 +165,7 @@ def show_home_page():
             st.write("") 
 
             for date_str in unique_dates:
-                # 1. 顯示日期標題
+                # 1. 顯示日期標題 (單獨一行)
                 date_obj = datetime.strptime(date_str, "%Y-%m-%d")
                 weekday_str = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][date_obj.weekday()]
                 st.markdown(f'<div class="date-header">{date_str} ({weekday_str})</div>', unsafe_allow_html=True)
@@ -152,43 +173,46 @@ def show_home_page():
                 # 2. 顯示當天的紀錄
                 day_records = df_filtered[df_filtered["日期"].dt.strftime("%Y-%m-%d") == date_str]
                 
-                for index, row in day_records.iterrows():
-                    # 排版：圖示 | 項目 | 金額 | 刪除框 (垂直置中)
-                    c_icon, c_item, c_amount, c_del = st.columns([1.2, 5, 2.5, 1], vertical_alignment="center")
+                for _, row in day_records.iterrows():
+                    # [重點修改] 版面配置：改為兩欄，確保手機不換行
+                    # 左邊 (85%)：所有文字資訊 (類型 + 項目 + 金額)
+                    # 右邊 (15%)：刪除框
+                    c_info, c_del = st.columns([5.5, 1], vertical_alignment="center")
                     
-                    with c_icon:
-                        # 顯示類型
-                        st.write("💵" if row['類型'] == "現金" else "💳")
+                    record_id = row['ID']
+                    
+                    with c_info:
+                        # 組合字串：圖示 | 項目 | 金額
+                        icon = "💵" if row['類型'] == "現金" else "💳"
+                        # 備註處理
+                        note_html = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
                         
-                    with c_item:
-                        # 顯示項目與備註
-                        st.write(f"**{row['項目']}**")
-                        if row['備註']:
-                            st.caption(row['備註'])
-                            
-                    with c_amount:
-                        # 顯示金額
-                        st.write(f"${row['金額']:,}")
-                        
+                        # 使用 HTML 渲染讓它們在同一行
+                        st.markdown(
+                            f"""
+                            <div class="list-item-text">
+                                {icon} &nbsp; <b>{row['項目']}</b> &nbsp; <code>${row['金額']:,}</code>
+                            </div>
+                            {note_html}
+                            """, 
+                            unsafe_allow_html=True
+                        )
+
                     with c_del:
-                        # 刪除框框 (Checkbox)
-                        # key 必須唯一，所以加上 index
-                        is_checked = st.checkbox("刪", key=f"del_chk_{index}", label_visibility="collapsed")
+                        # [重點修復] Key 使用唯一的 ID，避免刪除後勾選狀態錯亂
+                        is_checked = st.checkbox("刪", key=f"chk_{record_id}", label_visibility="collapsed")
                     
-                    # 邏輯：如果勾選了刪除框，就顯示確認按鈕
+                    # 確認刪除區域 (如果勾選才出現)
                     if is_checked:
                         with st.container():
-                            # 用一個紅色區塊提醒
-                            alert_col1, alert_col2 = st.columns([3, 1], vertical_alignment="center")
-                            alert_col1.error("確定刪除此筆?")
-                            if alert_col2.button("是", key=f"confirm_del_{index}", type="primary"):
-                                delete_record(index)
+                            col_ask, col_yes = st.columns([3, 1], vertical_alignment="center")
+                            col_ask.error("刪除此筆？")
+                            if col_yes.button("是", key=f"btn_del_{record_id}", type="primary"):
+                                delete_record(record_id)
                     
-                    # 分隔線
-                    st.markdown("<hr style='margin: 5px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+                    st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
             
             st.write("", "")
-            
         else:
             if not selected_type:
                 st.warning("請選擇顯示類型")
@@ -201,9 +225,7 @@ def show_home_page():
 #  頁面 B: 新增消費
 # ==========================================
 def show_add_page():
-    # 使用 container 來包裝頂部按鈕，讓它看起來像一個完整的區塊
     with st.container():
-        # [更新] 返回按鈕改為全寬的按鈕框
         st.button("🔙 返回首頁", on_click=go_to_home, use_container_width=True)
         
     st.title("➕ 新增消費")
@@ -228,7 +250,9 @@ def show_add_page():
             if not category:
                 st.error("⚠️ 請選擇支付方式")
             elif item and amount is not None and amount > 0:
+                # [新增] 儲存時生成唯一 ID
                 new_data = pd.DataFrame({
+                    "ID": [str(uuid.uuid4())],
                     "日期": [date],
                     "項目": [item],
                     "類型": [category],
