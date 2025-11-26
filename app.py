@@ -44,17 +44,17 @@ input[type=number] { -moz-appearance: textfield; }
     margin-bottom: 10px;
 }
 
-/* [修改] 列表項目文字放大 */
+/* 列表項目文字放大 */
 .list-item-text {
-    font-size: 1.25rem; /* 加大字體 (約20px) */
-    font-weight: 600;   /* 加粗 */
+    font-size: 1.25rem;
+    font-weight: 600;
     line-height: 1.5;
     color: #1f1f1f;
 }
 
-/* [修改] 備註文字放大 */
+/* 備註文字放大 */
 .list-item-sub {
-    font-size: 1rem;    /* 加大備註 (約16px) */
+    font-size: 1rem;
     color: #666;
     margin-top: 2px;
 }
@@ -68,40 +68,31 @@ div[data-testid="stCheckbox"] {
 </style>
 """, unsafe_allow_html=True)
 
-# JS: 1. 防止日期鍵盤彈出 2. [新增] 輸入完項目後自動跳到金額
+# JS: 防止日期鍵盤彈出 & 自動跳轉焦點
 components.html("""
 <script>
-    // 定義一個函數來檢查並綁定事件
     function setupInteractions() {
         const doc = window.parent.document;
         
-        // 1. 日期輸入框優化
         const dateInputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
         dateInputs.forEach(input => {
             input.setAttribute('inputmode', 'none'); 
             input.setAttribute('autocomplete', 'off');
         });
 
-        // 2. 自動跳轉焦點 (項目 -> 金額)
-        // 透過 aria-label 找到對應的輸入框
         const itemInput = doc.querySelector('input[aria-label="項目"]');
         const amountInput = doc.querySelector('input[aria-label="金額"]');
 
         if (itemInput && amountInput && !itemInput.dataset.enterBound) {
             itemInput.addEventListener('keydown', (e) => {
-                // 如果按下 Enter (電腦) 或 Go/Next (手機)
                 if (e.key === 'Enter' || e.keyCode === 13) {
-                    e.preventDefault(); // 阻止表單預設提交
-                    amountInput.focus(); // 強制跳到金額欄位
+                    e.preventDefault(); 
+                    amountInput.focus(); 
                 }
             });
-            // 標記已綁定，避免重複綁定
             itemInput.dataset.enterBound = 'true';
         }
     }
-
-    // 因為 Streamlit 會動態渲染，我們設定一個定時器每秒檢查一次
-    // 這樣可以確保切換頁面後功能依然有效
     setInterval(setupInteractions, 1000);
 </script>
 """, height=0, width=0)
@@ -145,46 +136,56 @@ def show_home_page():
             go_to_add()
 
     if not df.empty:
+        # 1. 先處理日期格式，以便後續篩選
         df["日期"] = pd.to_datetime(df["日期"])
         
-        # --- 儀表板 ---
-        total_cash = df[df["類型"] == "現金"]["金額"].sum()
-        total_card = df[df["類型"] == "信用卡"]["金額"].sum()
+        # 2. [UI調整] 將月份篩選移到最上方
+        #    這樣儀表板的數字才能根據選擇的月份變動
+        available_months = df["日期"].dt.to_period("M").unique().astype(str)
         
+        # 使用 columns 讓月份選擇器不要佔滿整行，留點空間
+        c_month, _ = st.columns([1, 1]) 
+        with c_month:
+            selected_month = st.selectbox("月份", options=["所有時間"] + sorted(available_months, reverse=True), label_visibility="collapsed")
+        
+        # 3. [核心邏輯] 根據選擇的月份，先篩選出該月的資料
+        df_month_filtered = df.copy()
+        if selected_month != "所有時間":
+            df_month_filtered = df_month_filtered[df_month_filtered["日期"].dt.to_period("M").astype(str) == selected_month]
+        
+        # 4. [計算總額] 使用「篩選後」的資料來計算總額
+        total_cash = df_month_filtered[df_month_filtered["類型"] == "現金"]["金額"].sum()
+        total_card = df_month_filtered[df_month_filtered["類型"] == "信用卡"]["金額"].sum()
+        
+        # 5. 顯示儀表板
         m1, m2 = st.columns(2)
         m1.metric("💵 現金", f"${total_cash:,.0f}")
         m2.metric("💳 信用卡", f"${total_card:,.0f}")
 
-        # --- 篩選區 ---
-        st.write("")
-        available_months = df["日期"].dt.to_period("M").unique().astype(str)
-        
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            selected_month = st.selectbox("月份", options=["所有時間"] + sorted(available_months, reverse=True), label_visibility="collapsed")
-        with c2:
-            selected_type = st.segmented_control(
-                "類型",
-                options=["現金", "信用卡"],
-                default=["現金", "信用卡"],
-                selection_mode="multi",
-                label_visibility="collapsed"
-            )
+        st.divider()
 
-        # --- 列表顯示邏輯 ---
-        df_filtered = df.copy()
-        
-        if selected_month != "所有時間":
-            df_filtered = df_filtered[df_filtered["日期"].dt.to_period("M").astype(str) == selected_month]
+        # 6. 類型篩選 (控制下方列表顯示)
+        #    這裡使用 segmented_control 讓操作更直覺
+        selected_type = st.segmented_control(
+            "顯示類型",
+            options=["現金", "信用卡"],
+            default=["現金", "信用卡"],
+            selection_mode="multi",
+            label_visibility="collapsed"
+        )
+
+        # 7. [列表篩選] 在月份篩選的基礎上，再進行類型篩選
+        df_final = df_month_filtered.copy()
         
         if not selected_type:
-            df_filtered = pd.DataFrame(columns=df.columns)
+            df_final = pd.DataFrame(columns=df.columns)
         else:
-            df_filtered = df_filtered[df_filtered["類型"].isin(selected_type)]
+            df_final = df_final[df_final["類型"].isin(selected_type)]
 
-        if not df_filtered.empty:
-            df_filtered = df_filtered.sort_values(by="日期", ascending=False)
-            unique_dates = df_filtered["日期"].dt.strftime("%Y-%m-%d").unique()
+        # 8. 顯示列表
+        if not df_final.empty:
+            df_final = df_final.sort_values(by="日期", ascending=False)
+            unique_dates = df_final["日期"].dt.strftime("%Y-%m-%d").unique()
             
             st.write("") 
 
@@ -193,7 +194,7 @@ def show_home_page():
                 weekday_str = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][date_obj.weekday()]
                 st.markdown(f'<div class="date-header">{date_str} ({weekday_str})</div>', unsafe_allow_html=True)
                 
-                day_records = df_filtered[df_filtered["日期"].dt.strftime("%Y-%m-%d") == date_str]
+                day_records = df_final[df_final["日期"].dt.strftime("%Y-%m-%d") == date_str]
                 
                 for _, row in day_records.iterrows():
                     c_info, c_del = st.columns([5.5, 1], vertical_alignment="center")
@@ -203,7 +204,6 @@ def show_home_page():
                         icon = "💵" if row['類型'] == "現金" else "💳"
                         note_html = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
                         
-                        # [修改] 使用新的 class list-item-text
                         st.markdown(
                             f"""
                             <div class="list-item-text">
@@ -220,7 +220,7 @@ def show_home_page():
                     if is_checked:
                         with st.container():
                             col_ask, col_yes = st.columns([3, 1], vertical_alignment="center")
-                            col_ask.error("刪除此筆？")
+                            col_ask.error("刪除?")
                             if col_yes.button("是", key=f"btn_del_{record_id}", type="primary"):
                                 delete_record(record_id)
                     
@@ -229,8 +229,12 @@ def show_home_page():
         else:
             if not selected_type:
                 st.warning("請選擇顯示類型")
+            elif not df_month_filtered.empty:
+                # 如果月份有資料，但被類型篩選過濾掉了
+                st.info("📭 此類型無資料")
             else:
-                st.info("📭 查無資料")
+                # 如果該月份完全沒資料
+                st.info("📭 本月尚無消費紀錄")
     else:
         st.info("點擊右上角「新增」開始記帳！")
 
@@ -253,7 +257,6 @@ def show_add_page():
             selection_mode="single"
         )
         
-        # [關鍵] 這裡的 label 文字必須與 JS 中的 aria-label 選擇器一致
         item = st.text_input("項目", placeholder="例如: 午餐")
         amount = st.number_input("金額", min_value=0, step=1, value=None, placeholder="輸入金額")
         note = st.text_area("備註 (選填)", height=60)
