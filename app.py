@@ -15,12 +15,12 @@ except Exception as e:
     st.error(f"⚠️ 連線失敗。")
     st.stop()
 
-# --- CSS 優化 (針對手機排版與按鈕) ---
+# --- CSS 優化 (核心修復) ---
 st.markdown("""
 <style>
-/* 頂部與底部間距 */
+/* 1. 頂部與底部間距 */
 .block-container { 
-    padding-top: 3rem; 
+    padding-top: 3.5rem; 
     padding-bottom: 2rem;
 }
 
@@ -29,60 +29,80 @@ div[data-testid="InputInstructions"] > span:nth-child(1) { display: none; }
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
 
-/* 列表排版：左文右鈕 */
-.list-row {
+/* 2. [關鍵修復] 強制手機版 Columns 不換行 */
+div[data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important; /* 禁止換行 */
+    align-items: center; /* 垂直置中 */
+}
+
+/* 讓 Column 可以縮到很小，不會被內容撐開導致換行 */
+div[data-testid="column"] {
+    min-width: 0px !important; 
+    flex: 1 1 auto;
+}
+
+/* 3. 列表內容排版 */
+.list-content {
     display: flex;
     align-items: center;
     width: 100%;
-    /* 確保文字不會因為太長而把右邊擠下去 */
-    overflow: hidden; 
+    overflow: hidden; /* 防止溢出 */
 }
-.list-left {
+.list-icon {
+    font-size: 1.2rem;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+.list-text-group {
     display: flex;
-    align-items: center;
-    gap: 5px;
+    flex-direction: column;
     flex-grow: 1;
     overflow: hidden;
+    margin-right: 8px;
 }
-.list-item-name {
+.list-item {
     font-weight: 600;
     color: #333;
-    font-size: 1.1rem;
+    font-size: 1rem;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis; /* 字太長變... */
-    max-width: 120px; /* 限制寬度 */
+    text-overflow: ellipsis;
+}
+.list-note {
+    font-size: 0.8rem;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .list-amount {
     font-family: monospace;
     font-weight: bold;
     color: #333;
-    font-size: 1.1rem;
-    margin-right: 5px;
-    white-space: nowrap; /* 金額不換行 */
+    font-size: 1rem;
+    flex-shrink: 0; /* 金額不准縮小 */
 }
 
 /* 日期標題 */
 .date-header { 
     font-weight: bold; 
     background: #f8f9fa; 
-    padding: 6px 12px; 
+    padding: 5px 10px; 
     border-radius: 6px; 
     margin: 15px 0 5px 0;
     color: #555;
     border-left: 4px solid #ff4b4b;
+    font-size: 0.95rem;
 }
 
-/* [關鍵修改] 按鈕樣式優化 */
-/* 強制讓列表裡的按鈕變緊湊，才不會被擠到下一行 */
+/* 4. 按鈕樣式極小化 */
 div[data-testid="column"] button {
-    padding: 0.2rem 0.5rem !important; /* 減少內距 */
-    font-size: 0.9rem !important;
-    line-height: 1.2 !important;
-    min-height: 0px !important; /* 移除 Streamlit 預設最小高度 */
-    height: auto !important;
+    padding: 0px 8px !important; /* 極小內距 */
+    font-size: 0.85rem !important;
+    height: 32px !important;
+    min-height: 0px !important;
     margin: 0 !important;
-    width: 100%; /* 填滿該欄位 */
+    white-space: nowrap;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -117,7 +137,6 @@ components.html("""
 # --- 初始化 Session State ---
 if 'page' not in st.session_state:
     st.session_state.page = 'home'
-# 用來記錄哪一筆資料正在「準備刪除」
 if 'delete_target' not in st.session_state:
     st.session_state.delete_target = None
 
@@ -161,14 +180,12 @@ def delete_record(record_id):
     full_df = conn.read(ttl=0)
     full_df = full_df[full_df["ID"] != record_id]
     conn.update(data=full_df)
-    st.session_state.delete_target = None # 重置
+    st.session_state.delete_target = None
     st.cache_data.clear()
     st.toast("已刪除", icon="🗑️")
     st.rerun()
 
-# 設定刪除目標 (第一階段)
 def set_delete_target(record_id):
-    # 如果已經選了同一個，就取消 (toggle)
     if st.session_state.delete_target == record_id:
         st.session_state.delete_target = None
     else:
@@ -190,7 +207,6 @@ def show_home_page():
     if not df.empty:
         df["日期"] = pd.to_datetime(df["日期"])
         
-        # 預設選取當月
         all_months = sorted(df["日期"].dt.to_period("M").astype(str).unique(), reverse=True)
         current_month_str = datetime.now().strftime("%Y-%m")
         
@@ -207,11 +223,9 @@ def show_home_page():
                 label_visibility="collapsed"
             )
         
-        # 標題
         display_title = f"{sel_month} 消費總覽" if sel_month != "所有時間" else "總消費總覽"
         st.caption(display_title)
         
-        # 資料處理
         df_show = df.copy()
         if sel_month != "所有時間":
             df_show = df_show[df_show["日期"].dt.to_period("M").astype(str) == sel_month]
@@ -235,7 +249,6 @@ def show_home_page():
         else:
             df_show = df_show[df_show["類型"].isin(selected_type)]
         
-        # --- 列表顯示區 ---
         if not df_show.empty:
             df_show = df_show.sort_values(by="日期", ascending=False)
             dates = df_show["日期"].dt.strftime("%Y-%m-%d").unique()
@@ -250,36 +263,36 @@ def show_home_page():
                 day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
                 
                 for _, row in day_data.iterrows():
-                    # [排版核心] 左欄 3.5 (約75%) | 右欄 1.2 (約25%)
-                    # 這個比例經過測試比較不容易在手機換行
-                    c_content, c_btn = st.columns([3.5, 1.2], vertical_alignment="center")
+                    # [關鍵佈局]
+                    # 左欄 (4.5) : 圖示 + 項目 + 備註 + 金額
+                    # 右欄 (1) : 按鈕
+                    # CSS flex-wrap: nowrap 會保證它們在同一行
+                    c_content, c_btn = st.columns([4.5, 1], vertical_alignment="center")
                     
                     with c_content:
                         icon = "💵" if row['類型'] == "現金" else "💳"
-                        # 備註顯示邏輯
-                        note_html = ""
+                        # 處理備註
+                        note_div = ""
                         if row['備註']:
-                             note_html = f"<span style='color:#999;font-size:0.85rem;margin-left:5px;'>({row['備註']})</span>"
-
-                        html_content = f"""
-                        <div class="list-row">
-                            <div class="list-left">
-                                <span style="font-size:1.2rem;">{icon}</span>
-                                <span class="list-item-name">{row['項目']}</span>
-                                {note_html}
+                            note_div = f'<div class="list-note">{row["備註"]}</div>'
+                        
+                        # [修復] 乾淨的 HTML 結構，避免 </div> 錯誤
+                        html_code = f"""
+                        <div class="list-content">
+                            <div class="list-icon">{icon}</div>
+                            <div class="list-text-group">
+                                <div class="list-item">{row['項目']}</div>
+                                {note_div}
                             </div>
                             <div class="list-amount">${row['金額']:,}</div>
                         </div>
                         """
-                        st.markdown(html_content, unsafe_allow_html=True)
+                        st.markdown(html_code, unsafe_allow_html=True)
                     
                     with c_btn:
-                        # 按鈕邏輯
                         if st.session_state.delete_target == row['ID']:
-                            # 第二階段：紅色確認鈕
                             st.button("確定", key=f"cf_{row['ID']}", type="primary", on_click=delete_record, args=(row['ID'],), use_container_width=True)
                         else:
-                            # 第一階段：灰色刪除鈕
                             st.button("刪除", key=f"del_{row['ID']}", type="secondary", on_click=set_delete_target, args=(row['ID'],), use_container_width=True)
                     
                     st.markdown("<hr style='margin: 0; border-top: 1px solid #f0f0f0;'>", unsafe_allow_html=True)
