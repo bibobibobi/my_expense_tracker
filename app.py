@@ -1,124 +1,94 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
-import os
 import uuid
 from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
 # --- 設定頁面資訊 ---
-st.set_page_config(page_title="記帳本", page_icon="💰", layout="wide")
+st.set_page_config(page_title="雲端記帳本", page_icon="☁️", layout="wide")
 
-# --- 初始化 Session State ---
-if 'page' not in st.session_state:
-    st.session_state.page = 'home'
+# --- Google Sheets 連線 ---
+# 程式會自動讀取你在 Streamlit Cloud 設定好的 Secrets
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error(f"⚠️ 連線失敗：請檢查 Secrets 設定。錯誤訊息: {e}")
+    st.stop()
 
-def go_to_add():
-    st.session_state.page = 'add'
-    st.rerun()
-
-def go_to_home():
-    st.session_state.page = 'home'
-    st.rerun()
-
-# --- CSS 與 JS 魔法區 ---
+# --- CSS 與 UI 優化 ---
 st.markdown("""
 <style>
-/* 隱藏不必要的元素 */
 div[data-testid="InputInstructions"] > span:nth-child(1) { display: none; }
-.block-container { padding-top: 3rem; }
-
-/* 隱藏數字輸入框箭頭 */
-input::-webkit-outer-spin-button,
-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.block-container { padding-top: 1rem; }
+input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
-
-/* 日期標題樣式 */
-.date-header {
-    font-size: 1.1rem;
-    font-weight: bold;
-    color: #444;
-    background-color: #f0f2f6;
-    padding: 8px 12px;
-    border-radius: 8px;
-    margin-top: 20px;
-    margin-bottom: 10px;
-}
-
-/* 列表項目文字放大 */
-.list-item-text {
-    font-size: 1.25rem;
-    font-weight: 600;
-    line-height: 1.5;
-    color: #1f1f1f;
-}
-
-/* 備註文字放大 */
-.list-item-sub {
-    font-size: 1rem;
-    color: #666;
-    margin-top: 2px;
-}
-
-/* 調整 Checkbox */
-div[data-testid="stCheckbox"] {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-}
+.list-item-text { font-size: 1.2rem; font-weight: 600; color: #333; }
+.list-item-sub { font-size: 0.9rem; color: #666; }
+.date-header { font-weight: bold; background: #f0f2f6; padding: 5px 10px; border-radius: 5px; margin: 15px 0 5px 0;}
 </style>
 """, unsafe_allow_html=True)
 
-# JS: 防止日期鍵盤彈出 & 自動跳轉焦點
+# JS 優化 (防止手機鍵盤跳出)
 components.html("""
 <script>
     function setupInteractions() {
         const doc = window.parent.document;
-        
         const dateInputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
         dateInputs.forEach(input => {
             input.setAttribute('inputmode', 'none'); 
             input.setAttribute('autocomplete', 'off');
         });
-
-        const itemInput = doc.querySelector('input[aria-label="項目"]');
-        const amountInput = doc.querySelector('input[aria-label="金額"]');
-
-        if (itemInput && amountInput && !itemInput.dataset.enterBound) {
-            itemInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.keyCode === 13) {
-                    e.preventDefault(); 
-                    amountInput.focus(); 
-                }
-            });
-            itemInput.dataset.enterBound = 'true';
-        }
     }
     setInterval(setupInteractions, 1000);
 </script>
 """, height=0, width=0)
 
-# --- 檔案處理 ---
-DATA_FILE = "expenses.csv"
+# --- 初始化 Session State ---
+if 'page' not in st.session_state:
+    st.session_state.page = 'home'
 
+# ==========================================
+#  資料庫操作 (GSheets)
+# ==========================================
 def load_data():
-    if not os.path.exists(DATA_FILE):
+    # ttl=0 代表不快取，每次都讀最新的
+    try:
+        df = conn.read(ttl=0)
+    except Exception:
+        # 如果是全新的表，可能會讀取錯誤，回傳空的
+        return pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
+        
+    if df.empty:
         return pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
     
-    df = pd.read_csv(DATA_FILE)
-    if "ID" not in df.columns:
-        df["ID"] = [str(uuid.uuid4()) for _ in range(len(df))]
-        save_data(df)
-    if "備註" in df.columns:
-        df["備註"] = df["備註"].fillna("")
+    required_cols = ["ID", "日期", "項目", "類型", "金額", "備註"]
+    for col in required_cols:
+        if col not in df.columns: df[col] = ""
+    
+    if df["ID"].isnull().any():
+        df.loc[df["ID"].isnull(), "ID"] = [str(uuid.uuid4()) for _ in range(df["ID"].isnull().sum())]
+    
+    df["備註"] = df["備註"].fillna("")
     return df
 
-def save_data(df):
-    df.to_csv(DATA_FILE, index=False)
+def save_new_record(new_record_df):
+    try:
+        full_df = conn.read(ttl=0)
+    except Exception:
+        full_df = pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
+
+    required_cols = ["ID", "日期", "項目", "類型", "金額", "備註"]
+    for col in required_cols:
+        if col not in full_df.columns: full_df[col] = ""
+
+    updated_df = pd.concat([full_df, new_record_df], ignore_index=True)
+    conn.update(data=updated_df)
 
 def delete_record(record_id):
-    df = load_data()
-    df = df[df["ID"] != record_id]
-    save_data(df)
+    full_df = conn.read(ttl=0)
+    full_df = full_df[full_df["ID"] != record_id]
+    conn.update(data=full_df)
     st.toast("已刪除", icon="🗑️")
     st.rerun()
 
@@ -126,166 +96,95 @@ def delete_record(record_id):
 #  頁面 A: 首頁
 # ==========================================
 def show_home_page():
-    df = load_data()
-    
     col_header, col_btn = st.columns([7, 3], vertical_alignment="center")
     with col_header:
-        st.subheader("我的記帳本")
+        df = load_data() 
+        st.subheader("我的記帳本") 
     with col_btn:
         if st.button("➕ 新增", use_container_width=True, type="primary"):
-            go_to_add()
+            st.session_state.page = 'add'
+            st.rerun()
 
     if not df.empty:
-        # 1. 先處理日期格式，以便後續篩選
         df["日期"] = pd.to_datetime(df["日期"])
+        months = sorted(df["日期"].dt.to_period("M").astype(str).unique(), reverse=True)
         
-        # 2. [UI調整] 將月份篩選移到最上方
-        #    這樣儀表板的數字才能根據選擇的月份變動
-        available_months = df["日期"].dt.to_period("M").unique().astype(str)
+        c_m, _ = st.columns([1, 1])
+        with c_m:
+            sel_month = st.selectbox("月份", ["所有時間"] + months, label_visibility="collapsed")
         
-        # 使用 columns 讓月份選擇器不要佔滿整行，留點空間
-        c_month, _ = st.columns([1, 1]) 
-        with c_month:
-            selected_month = st.selectbox("月份", options=["所有時間"] + sorted(available_months, reverse=True), label_visibility="collapsed")
-        
-        # 3. [核心邏輯] 根據選擇的月份，先篩選出該月的資料
-        df_month_filtered = df.copy()
-        if selected_month != "所有時間":
-            df_month_filtered = df_month_filtered[df_month_filtered["日期"].dt.to_period("M").astype(str) == selected_month]
-        
-        # 4. [計算總額] 使用「篩選後」的資料來計算總額
-        total_cash = df_month_filtered[df_month_filtered["類型"] == "現金"]["金額"].sum()
-        total_card = df_month_filtered[df_month_filtered["類型"] == "信用卡"]["金額"].sum()
-        
-        # 5. 顯示儀表板
-        m1, m2 = st.columns(2)
-        m1.metric("💵 現金", f"${total_cash:,.0f}")
-        m2.metric("💳 信用卡", f"${total_card:,.0f}")
-
-        st.divider()
-
-        # 6. 類型篩選 (控制下方列表顯示)
-        #    這裡使用 segmented_control 讓操作更直覺
-        selected_type = st.segmented_control(
-            "顯示類型",
-            options=["現金", "信用卡"],
-            default=["現金", "信用卡"],
-            selection_mode="multi",
-            label_visibility="collapsed"
-        )
-
-        # 7. [列表篩選] 在月份篩選的基礎上，再進行類型篩選
-        df_final = df_month_filtered.copy()
-        
-        if not selected_type:
-            df_final = pd.DataFrame(columns=df.columns)
-        else:
-            df_final = df_final[df_final["類型"].isin(selected_type)]
-
-        # 8. 顯示列表
-        if not df_final.empty:
-            df_final = df_final.sort_values(by="日期", ascending=False)
-            unique_dates = df_final["日期"].dt.strftime("%Y-%m-%d").unique()
+        df_show = df.copy()
+        if sel_month != "所有時間":
+            df_show = df_show[df_show["日期"].dt.to_period("M").astype(str) == sel_month]
             
-            st.write("") 
-
-            for date_str in unique_dates:
-                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-                weekday_str = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][date_obj.weekday()]
-                st.markdown(f'<div class="date-header">{date_str} ({weekday_str})</div>', unsafe_allow_html=True)
-                
-                day_records = df_final[df_final["日期"].dt.strftime("%Y-%m-%d") == date_str]
-                
-                for _, row in day_records.iterrows():
-                    c_info, c_del = st.columns([5.5, 1], vertical_alignment="center")
-                    record_id = row['ID']
-                    
-                    with c_info:
-                        icon = "💵" if row['類型'] == "現金" else "💳"
-                        note_html = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
-                        
-                        st.markdown(
-                            f"""
-                            <div class="list-item-text">
-                                {icon} &nbsp; <b>{row['項目']}</b> &nbsp; <code>${row['金額']:,}</code>
-                            </div>
-                            {note_html}
-                            """, 
-                            unsafe_allow_html=True
-                        )
-
-                    with c_del:
-                        is_checked = st.checkbox("刪", key=f"chk_{record_id}", label_visibility="collapsed")
-                    
-                    if is_checked:
-                        with st.container():
-                            col_ask, col_yes = st.columns([3, 1], vertical_alignment="center")
-                            col_ask.error("刪除?")
-                            if col_yes.button("是", key=f"btn_del_{record_id}", type="primary"):
-                                delete_record(record_id)
-                    
-                    st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
-            st.write("", "")
-        else:
-            if not selected_type:
-                st.warning("請選擇顯示類型")
-            elif not df_month_filtered.empty:
-                # 如果月份有資料，但被類型篩選過濾掉了
-                st.info("📭 此類型無資料")
-            else:
-                # 如果該月份完全沒資料
-                st.info("📭 本月尚無消費紀錄")
+        cash = df_show[df_show["類型"]=="現金"]["金額"].sum()
+        card = df_show[df_show["類型"]=="信用卡"]["金額"].sum()
+        
+        m1, m2 = st.columns(2)
+        m1.metric("現金", f"${cash:,.0f}")
+        m2.metric("信用卡", f"${card:,.0f}")
+        
+        st.divider()
+        
+        df_show = df_show.sort_values(by="日期", ascending=False)
+        dates = df_show["日期"].dt.strftime("%Y-%m-%d").unique()
+        
+        for d in dates:
+            d_obj = datetime.strptime(d, "%Y-%m-%d")
+            w_str = ["週一","週二","週三","週四","週五","週六","週日"][d_obj.weekday()]
+            st.markdown(f'<div class="date-header">{d} ({w_str})</div>', unsafe_allow_html=True)
+            
+            day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
+            for _, row in day_data.iterrows():
+                c_txt, c_del = st.columns([5.5, 1], vertical_alignment="center")
+                with c_txt:
+                    icon = "💵" if row['類型'] == "現金" else "💳"
+                    note = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
+                    st.markdown(f"<div class='list-item-text'>{icon} <b>{row['項目']}</b> <code>${row['金額']:,}</code></div>{note}", unsafe_allow_html=True)
+                with c_del:
+                    if st.checkbox("刪", key=f"d_{row['ID']}", label_visibility="collapsed"):
+                        st.button("是", key=f"cf_{row['ID']}", on_click=delete_record, args=(row['ID'],))
+                st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
     else:
-        st.info("點擊右上角「新增」開始記帳！")
+        st.info("目前沒有紀錄，點擊右上角新增！")
 
 # ==========================================
-#  頁面 B: 新增消費
+#  頁面 B: 新增
 # ==========================================
 def show_add_page():
     with st.container():
-        st.button("🔙 返回首頁", on_click=go_to_home, use_container_width=True)
-        
+        if st.button("🔙 取消", use_container_width=True):
+            st.session_state.page = 'home'
+            st.rerun()
+            
     st.title("➕ 新增消費")
     
-    with st.form("add_form", clear_on_submit=True):
+    with st.form("add"):
         date = st.date_input("日期", datetime.now())
-        
-        category = st.segmented_control(
-            "支付方式", 
-            options=["現金", "信用卡"],
-            default="現金",
-            selection_mode="single"
-        )
-        
+        cat = st.segmented_control("方式", ["現金", "信用卡"], default="現金")
         item = st.text_input("項目", placeholder="例如: 午餐")
-        amount = st.number_input("金額", min_value=0, step=1, value=None, placeholder="輸入金額")
-        note = st.text_area("備註 (選填)", height=60)
+        amt = st.number_input("金額", min_value=1, value=None)
+        note = st.text_area("備註")
         
-        submitted = st.form_submit_button("💾 儲存", type="primary", use_container_width=True)
-
-        if submitted:
-            if not category:
-                st.error("⚠️ 請選擇支付方式")
-            elif item and amount is not None and amount > 0:
-                new_data = pd.DataFrame({
-                    "ID": [str(uuid.uuid4())],
-                    "日期": [date],
-                    "項目": [item],
-                    "類型": [category],
-                    "金額": [amount],
-                    "備註": [note]
-                })
-                df = load_data()
-                df = pd.concat([df, new_data], ignore_index=True)
-                save_data(df)
-                st.toast(f"已儲存: {item}", icon='✅')
+        if st.form_submit_button("💾 儲存", type="primary", use_container_width=True):
+            if not cat or not item or not amt:
+                st.error("請填寫完整")
+            else:
+                new_df = pd.DataFrame([{
+                    "ID": str(uuid.uuid4()),
+                    "日期": date.strftime("%Y-%m-%d"),
+                    "項目": item,
+                    "類型": cat,
+                    "金額": amt,
+                    "備註": note
+                }])
+                save_new_record(new_df)
+                st.toast("已儲存！")
                 st.session_state.page = 'home'
                 st.rerun()
-            else:
-                st.error("⚠️ 請輸入項目名稱與金額")
 
-# --- 主程式流程 ---
+# --- 主程式 ---
 if st.session_state.page == 'home':
     show_home_page()
-elif st.session_state.page == 'add':
+else:
     show_add_page()
