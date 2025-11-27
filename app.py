@@ -9,27 +9,62 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="雲端記帳本", page_icon="☁️", layout="wide")
 
 # --- Google Sheets 連線 ---
-# 程式會自動讀取你在 Streamlit Cloud 設定好的 Secrets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error(f"⚠️ 連線失敗：請檢查 Secrets 設定。錯誤訊息: {e}")
+    st.error(f"⚠️ 連線失敗：請檢查 Secrets 設定。")
     st.stop()
 
-# --- CSS 與 UI 優化 ---
+# --- CSS 優化 (修復遮擋與列表格式) ---
 st.markdown("""
 <style>
+/* 1. 修復頂部遮擋：加大頂部間距 */
+.block-container { 
+    padding-top: 4rem; 
+    padding-bottom: 5rem;
+}
+
+/* 隱藏不需要的提示 */
 div[data-testid="InputInstructions"] > span:nth-child(1) { display: none; }
-.block-container { padding-top: 1rem; }
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
-.list-item-text { font-size: 1.2rem; font-weight: 600; color: #333; }
-.list-item-sub { font-size: 0.9rem; color: #666; }
-.date-header { font-weight: bold; background: #f0f2f6; padding: 5px 10px; border-radius: 5px; margin: 15px 0 5px 0;}
+
+/* 列表文字樣式優化 */
+.list-item-text { 
+    font-size: 1.15rem; 
+    font-weight: 600; 
+    color: #333; 
+    line-height: 1.4;
+    display: flex;
+    align-items: center;
+}
+.list-item-sub { 
+    font-size: 0.9rem; 
+    color: #666; 
+    margin-left: 1.6rem; /* 讓備註稍微縮排 */
+}
+
+/* 日期標題 */
+.date-header { 
+    font-weight: bold; 
+    background: #f0f2f6; 
+    padding: 6px 12px; 
+    border-radius: 6px; 
+    margin: 20px 0 8px 0;
+    color: #444;
+}
+
+/* 調整 Checkbox 垂直置中 */
+div[data-testid="stCheckbox"] { 
+    display: flex; 
+    justify-content: center; 
+    align-items: center; 
+    margin-top: 5px;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# JS 優化 (防止手機鍵盤跳出)
+# JS 優化
 components.html("""
 <script>
     function setupInteractions() {
@@ -49,14 +84,13 @@ if 'page' not in st.session_state:
     st.session_state.page = 'home'
 
 # ==========================================
-#  資料庫操作 (GSheets)
+#  資料庫操作
 # ==========================================
 def load_data():
-    # ttl=0 代表不快取，每次都讀最新的
+    # 優化：ttl=5 代表 5 秒內重複讀取會用快取，減少卡頓
     try:
-        df = conn.read(ttl=0)
+        df = conn.read(ttl=5)
     except Exception:
-        # 如果是全新的表，可能會讀取錯誤，回傳空的
         return pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
         
     if df.empty:
@@ -74,7 +108,7 @@ def load_data():
 
 def save_new_record(new_record_df):
     try:
-        full_df = conn.read(ttl=0)
+        full_df = conn.read(ttl=0) # 寫入前強制讀最新的
     except Exception:
         full_df = pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
 
@@ -125,26 +159,74 @@ def show_home_page():
         m2.metric("信用卡", f"${card:,.0f}")
         
         st.divider()
+
+        # [修復] 找回消失的過濾按鈕
+        selected_type = st.segmented_control(
+            "顯示類型",
+            options=["現金", "信用卡"],
+            default=["現金", "信用卡"],
+            selection_mode="multi",
+            label_visibility="collapsed"
+        )
         
-        df_show = df_show.sort_values(by="日期", ascending=False)
-        dates = df_show["日期"].dt.strftime("%Y-%m-%d").unique()
+        # 應用類型過濾
+        if not selected_type:
+            df_show = pd.DataFrame(columns=df.columns)
+        else:
+            df_show = df_show[df_show["類型"].isin(selected_type)]
         
-        for d in dates:
-            d_obj = datetime.strptime(d, "%Y-%m-%d")
-            w_str = ["週一","週二","週三","週四","週五","週六","週日"][d_obj.weekday()]
-            st.markdown(f'<div class="date-header">{d} ({w_str})</div>', unsafe_allow_html=True)
+        # 列表顯示
+        if not df_show.empty:
+            df_show = df_show.sort_values(by="日期", ascending=False)
+            dates = df_show["日期"].dt.strftime("%Y-%m-%d").unique()
             
-            day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
-            for _, row in day_data.iterrows():
-                c_txt, c_del = st.columns([5.5, 1], vertical_alignment="center")
-                with c_txt:
-                    icon = "💵" if row['類型'] == "現金" else "💳"
-                    note = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
-                    st.markdown(f"<div class='list-item-text'>{icon} <b>{row['項目']}</b> <code>${row['金額']:,}</code></div>{note}", unsafe_allow_html=True)
-                with c_del:
-                    if st.checkbox("刪", key=f"d_{row['ID']}", label_visibility="collapsed"):
-                        st.button("是", key=f"cf_{row['ID']}", on_click=delete_record, args=(row['ID'],))
-                st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+            st.write("") # 間距
+
+            for d in dates:
+                d_obj = datetime.strptime(d, "%Y-%m-%d")
+                w_str = ["週一","週二","週三","週四","週五","週六","週日"][d_obj.weekday()]
+                st.markdown(f'<div class="date-header">{d} ({w_str})</div>', unsafe_allow_html=True)
+                
+                day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
+                
+                for _, row in day_data.iterrows():
+                    # [修復] 列表排版：左邊資訊 (85%)，右邊刪除框 (15%)
+                    c_txt, c_del = st.columns([6, 1], vertical_alignment="center")
+                    
+                    with c_txt:
+                        icon = "💵" if row['類型'] == "現金" else "💳"
+                        note = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
+                        # [修復] HTML 結構優化
+                        st.markdown(
+                            f"""
+                            <div class='list-item-text'>
+                                <span style='margin-right:8px;'>{icon}</span>
+                                <span style='flex-grow:1;'>{row['項目']}</span>
+                                <code>${row['金額']:,}</code>
+                            </div>
+                            {note}
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                    
+                    with c_del:
+                        is_checked = st.checkbox("刪", key=f"d_{row['ID']}", label_visibility="collapsed")
+                    
+                    # [修復] 刪除確認區域
+                    if is_checked:
+                        # 使用 container 讓背景稍微不同，或是直接顯示文字
+                        with st.container():
+                            st.markdown("<span style='color:red; font-size:0.8rem; font-weight:bold;'>確定刪除?</span>", unsafe_allow_html=True)
+                            # 按鈕加大一點
+                            if st.button("是", key=f"cf_{row['ID']}", type="secondary", use_container_width=True):
+                                delete_record(row['ID'])
+                                
+                    st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+        else:
+             if selected_type:
+                 st.info("📭 此區間無資料")
+             else:
+                 st.warning("⚠️ 請選擇至少一種類型")
     else:
         st.info("目前沒有紀錄，點擊右上角新增！")
 
