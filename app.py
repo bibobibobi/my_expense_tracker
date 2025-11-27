@@ -15,13 +15,13 @@ except Exception as e:
     st.error(f"⚠️ 連線失敗。")
     st.stop()
 
-# --- CSS 優化 (核心修復) ---
+# --- CSS 優化 ---
 st.markdown("""
 <style>
 /* 1. 頂部與底部間距 */
 .block-container { 
-    padding-top: 3.5rem; 
-    padding-bottom: 2rem;
+    padding-top: 4rem; 
+    padding-bottom: 6rem;
 }
 
 /* 隱藏提示 */
@@ -29,80 +29,75 @@ div[data-testid="InputInstructions"] > span:nth-child(1) { display: none; }
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
 
-/* 2. [關鍵修復] 強制手機版 Columns 不換行 */
-div[data-testid="stHorizontalBlock"] {
-    flex-wrap: nowrap !important; /* 禁止換行 */
-    align-items: center; /* 垂直置中 */
-}
-
-/* 讓 Column 可以縮到很小，不會被內容撐開導致換行 */
-div[data-testid="column"] {
-    min-width: 0px !important; 
-    flex: 1 1 auto;
-}
-
-/* 3. 列表內容排版 */
-.list-content {
+/* 2. [核心修改] 列表單行強制排版 */
+/* 這會確保左邊的文字區塊內容水平排列 */
+.list-row {
     display: flex;
     align-items: center;
+    justify-content: space-between; /* 左右撐開 */
     width: 100%;
-    overflow: hidden; /* 防止溢出 */
+    padding: 5px 0;
 }
-.list-icon {
-    font-size: 1.2rem;
-    margin-right: 8px;
-    flex-shrink: 0;
-}
-.list-text-group {
+.list-left {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    gap: 10px; /* 圖示與文字的間距 */
     flex-grow: 1;
-    overflow: hidden;
-    margin-right: 8px;
+    overflow: hidden; /* 防止文字爆版 */
 }
-.list-item {
+.list-item-name {
     font-weight: 600;
     color: #333;
-    font-size: 1rem;
+    font-size: 1.1rem;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
-}
-.list-note {
-    font-size: 0.8rem;
-    color: #888;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    text-overflow: ellipsis; /* 字太長變... */
+    max-width: 140px; /* 限制寬度確保金額顯示 */
 }
 .list-amount {
     font-family: monospace;
     font-weight: bold;
     color: #333;
-    font-size: 1rem;
-    flex-shrink: 0; /* 金額不准縮小 */
+    font-size: 1.1rem;
+    margin-right: 5px;
+}
+.list-note {
+    font-size: 0.8rem;
+    color: #888;
+    margin-left: 5px;
 }
 
 /* 日期標題 */
 .date-header { 
     font-weight: bold; 
     background: #f8f9fa; 
-    padding: 5px 10px; 
+    padding: 8px 12px; 
     border-radius: 6px; 
-    margin: 15px 0 5px 0;
+    margin: 20px 0 5px 0;
     color: #555;
     border-left: 4px solid #ff4b4b;
-    font-size: 0.95rem;
 }
 
-/* 4. 按鈕樣式極小化 */
-div[data-testid="column"] button {
-    padding: 0px 8px !important; /* 極小內距 */
-    font-size: 0.85rem !important;
-    height: 32px !important;
-    min-height: 0px !important;
-    margin: 0 !important;
-    white-space: nowrap;
+/* 調整 Checkbox */
+div[data-testid="stCheckbox"] { 
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    padding-top: 5px;
+}
+div[data-testid="column"] {
+    align-self: center;
+}
+
+/* 浮動刪除按鈕樣式 (選擇性) */
+.delete-btn-area {
+    margin-top: 20px;
+    padding: 10px;
+    background: #fff0f0;
+    border-radius: 10px;
+    text-align: center;
+    border: 1px solid #ffcccc;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -118,6 +113,7 @@ components.html("""
             input.setAttribute('autocomplete', 'off');
         });
 
+        // 自動跳轉焦點
         const itemInput = doc.querySelector('input[aria-label="項目"]');
         const amountInput = doc.querySelector('input[aria-label="金額"]');
         if (itemInput && amountInput && !itemInput.dataset.enterBound) {
@@ -137,15 +133,17 @@ components.html("""
 # --- 初始化 Session State ---
 if 'page' not in st.session_state:
     st.session_state.page = 'home'
-if 'delete_target' not in st.session_state:
-    st.session_state.delete_target = None
+# 用來暫存勾選的 ID，因為移除 Form 後每次勾選都會 Rerun
+if 'selected_ids' not in st.session_state:
+    st.session_state.selected_ids = []
 
 # ==========================================
 #  資料庫操作
 # ==========================================
 def load_data():
+    # ttl=10: 10秒快取，讓勾選 Checkbox 時的 Rerun 變快，減少卡頓感
     try:
-        df = conn.read(ttl=5)
+        df = conn.read(ttl=10)
     except Exception:
         return pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
         
@@ -174,22 +172,26 @@ def save_new_record(new_record_df):
 
     updated_df = pd.concat([full_df, new_record_df], ignore_index=True)
     conn.update(data=updated_df)
+    # 清空快取以確保下次讀到最新的
     st.cache_data.clear()
 
-def delete_record(record_id):
+def delete_multiple_records(id_list):
+    if not id_list: return
     full_df = conn.read(ttl=0)
-    full_df = full_df[full_df["ID"] != record_id]
+    full_df = full_df[~full_df["ID"].isin(id_list)]
     conn.update(data=full_df)
-    st.session_state.delete_target = None
+    # 清空選取狀態
+    st.session_state.selected_ids = []
     st.cache_data.clear()
-    st.toast("已刪除", icon="🗑️")
+    st.toast(f"已刪除 {len(id_list)} 筆紀錄", icon="🗑️")
     st.rerun()
 
-def set_delete_target(record_id):
-    if st.session_state.delete_target == record_id:
-        st.session_state.delete_target = None
+# 處理 Checkbox 勾選邏輯
+def toggle_select(record_id):
+    if record_id in st.session_state.selected_ids:
+        st.session_state.selected_ids.remove(record_id)
     else:
-        st.session_state.delete_target = record_id
+        st.session_state.selected_ids.append(record_id)
 
 # ==========================================
 #  頁面 A: 首頁
@@ -207,12 +209,13 @@ def show_home_page():
     if not df.empty:
         df["日期"] = pd.to_datetime(df["日期"])
         
+        # 預設選取當月
         all_months = sorted(df["日期"].dt.to_period("M").astype(str).unique(), reverse=True)
         current_month_str = datetime.now().strftime("%Y-%m")
         
         default_index = 0
         if current_month_str in all_months:
-            default_index = all_months.index(current_month_str) + 1 
+            default_index = all_months.index(current_month_str) + 1 # +1 for "所有時間"
         
         c_m, c_dummy = st.columns([1.5, 1]) 
         with c_m:
@@ -223,9 +226,11 @@ def show_home_page():
                 label_visibility="collapsed"
             )
         
+        # 標題與篩選
         display_title = f"{sel_month} 消費總覽" if sel_month != "所有時間" else "總消費總覽"
         st.caption(display_title)
         
+        # 資料處理
         df_show = df.copy()
         if sel_month != "所有時間":
             df_show = df_show[df_show["日期"].dt.to_period("M").astype(str) == sel_month]
@@ -239,6 +244,7 @@ def show_home_page():
         
         st.divider()
 
+        # 類型過濾
         selected_type = st.segmented_control(
             "過濾", options=["現金", "信用卡"], default=["現金", "信用卡"],
             selection_mode="multi", label_visibility="collapsed"
@@ -249,12 +255,14 @@ def show_home_page():
         else:
             df_show = df_show[df_show["類型"].isin(selected_type)]
         
+        # --- 列表顯示區 ---
         if not df_show.empty:
             df_show = df_show.sort_values(by="日期", ascending=False)
             dates = df_show["日期"].dt.strftime("%Y-%m-%d").unique()
             
             st.write("") 
 
+            # [需求1] 列表渲染
             for d in dates:
                 d_obj = datetime.strptime(d, "%Y-%m-%d")
                 w_str = ["週一","週二","週三","週四","週五","週六","週日"][d_obj.weekday()]
@@ -263,39 +271,47 @@ def show_home_page():
                 day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
                 
                 for _, row in day_data.iterrows():
-                    # [關鍵佈局]
-                    # 左欄 (4.5) : 圖示 + 項目 + 備註 + 金額
-                    # 右欄 (1) : 按鈕
-                    # CSS flex-wrap: nowrap 會保證它們在同一行
-                    c_content, c_btn = st.columns([4.5, 1], vertical_alignment="center")
+                    # [關鍵佈局] 使用兩欄：內容 (85%) + 勾選框 (15%)
+                    # 這樣絕對保證內容在手機上不會被換行切斷
+                    c_content, c_chk = st.columns([8.5, 1.5], vertical_alignment="center")
                     
                     with c_content:
                         icon = "💵" if row['類型'] == "現金" else "💳"
-                        # 處理備註
-                        note_div = ""
-                        if row['備註']:
-                            note_div = f'<div class="list-note">{row["備註"]}</div>'
-                        
-                        # [修復] 乾淨的 HTML 結構，避免 </div> 錯誤
-                        html_code = f"""
-                        <div class="list-content">
-                            <div class="list-icon">{icon}</div>
-                            <div class="list-text-group">
-                                <div class="list-item">{row['項目']}</div>
-                                {note_div}
+                        # 組合 HTML，強制不換行
+                        html_content = f"""
+                        <div class="list-row">
+                            <div class="list-left">
+                                <span style="font-size:1.2rem;">{icon}</span>
+                                <span class="list-item-name">{row['項目']}</span>
+                                <span class="list-note">{row['備註']}</span>
                             </div>
                             <div class="list-amount">${row['金額']:,}</div>
                         </div>
                         """
-                        st.markdown(html_code, unsafe_allow_html=True)
+                        st.markdown(html_content, unsafe_allow_html=True)
                     
-                    with c_btn:
-                        if st.session_state.delete_target == row['ID']:
-                            st.button("確定", key=f"cf_{row['ID']}", type="primary", on_click=delete_record, args=(row['ID'],), use_container_width=True)
+                    with c_chk:
+                        # [需求2] Checkbox 勾選狀態綁定 session_state
+                        is_selected = row['ID'] in st.session_state.selected_ids
+                        if st.checkbox("刪", key=f"chk_{row['ID']}", value=is_selected, label_visibility="collapsed"):
+                             if row['ID'] not in st.session_state.selected_ids:
+                                 st.session_state.selected_ids.append(row['ID'])
+                                 st.rerun() # 勾選當下刷新，觸發按鈕顯示
                         else:
-                            st.button("刪除", key=f"del_{row['ID']}", type="secondary", on_click=set_delete_target, args=(row['ID'],), use_container_width=True)
+                             if row['ID'] in st.session_state.selected_ids:
+                                 st.session_state.selected_ids.remove(row['ID'])
+                                 st.rerun()
                     
                     st.markdown("<hr style='margin: 0; border-top: 1px solid #f0f0f0;'>", unsafe_allow_html=True)
+
+            # --- [需求2] 浮動刪除按鈕區 ---
+            # 只有當有選取項目時才顯示
+            if len(st.session_state.selected_ids) > 0:
+                st.write("")
+                st.markdown(f"<div class='delete-btn-area'>已選取 <b>{len(st.session_state.selected_ids)}</b> 筆資料</div>", unsafe_allow_html=True)
+                # 這裡的按鈕按下後會執行刪除
+                if st.button("🗑️ 確認刪除選取項目", type="primary", use_container_width=True):
+                    delete_multiple_records(st.session_state.selected_ids)
         else:
              st.info("📭 此區間無資料")
     else:
