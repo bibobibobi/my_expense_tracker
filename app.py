@@ -6,7 +6,7 @@ from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # --- 設定頁面資訊 ---
-st.set_page_config(page_title="雲端記帳本", page_icon="logo.png", layout="wide")
+st.set_page_config(page_title="雲端記帳本", page_icon="Gemini_Generated_Image_cr48x8cr48x8cr48.png", layout="wide")
 
 # --- Google Sheets 連線 ---
 try:
