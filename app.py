@@ -15,13 +15,13 @@ except Exception as e:
     st.error(f"⚠️ 連線失敗：請檢查 Secrets 設定。")
     st.stop()
 
-# --- CSS 優化 (修復遮擋與列表格式) ---
+# --- CSS 優化 ---
 st.markdown("""
 <style>
-/* 1. 修復頂部遮擋：加大頂部間距 */
+/* 1. 修復頂部遮擋 */
 .block-container { 
     padding-top: 4rem; 
-    padding-bottom: 5rem;
+    padding-bottom: 8rem; /* 底部留多一點空間給刪除按鈕 */
 }
 
 /* 隱藏不需要的提示 */
@@ -29,51 +29,62 @@ div[data-testid="InputInstructions"] > span:nth-child(1) { display: none; }
 input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 input[type=number] { -moz-appearance: textfield; }
 
-/* 列表文字樣式優化 */
-.list-item-text { 
-    font-size: 1.15rem; 
-    font-weight: 600; 
-    color: #333; 
-    line-height: 1.4;
+/* 2. 列表格式強制單行優化 */
+/* 讓文字垂直置中，並限制高度避免換行 */
+div[data-testid="column"] {
     display: flex;
     align-items: center;
-}
-.list-item-sub { 
-    font-size: 0.9rem; 
-    color: #666; 
-    margin-left: 1.6rem; /* 讓備註稍微縮排 */
+    height: 100%;
 }
 
 /* 日期標題 */
 .date-header { 
     font-weight: bold; 
-    background: #f0f2f6; 
-    padding: 6px 12px; 
+    background: #eef2f8; 
+    padding: 8px 12px; 
     border-radius: 6px; 
-    margin: 20px 0 8px 0;
+    margin: 25px 0 10px 0;
     color: #444;
+    border-left: 5px solid #ff4b4b; /* 加個紅色飾條比較明顯 */
 }
 
 /* 調整 Checkbox 垂直置中 */
 div[data-testid="stCheckbox"] { 
-    display: flex; 
-    justify-content: center; 
-    align-items: center; 
-    margin-top: 5px;
+    justify-content: center;
+}
+div[data-testid="stCheckbox"] label {
+    min-height: 0px; /* 修正 Streamlit 預設高度導致的跑版 */
 }
 </style>
 """, unsafe_allow_html=True)
 
-# JS 優化
+# JS 優化: 自動跳轉與鍵盤控制
 components.html("""
 <script>
     function setupInteractions() {
         const doc = window.parent.document;
+        
+        // 1. 防止日期鍵盤跳出
         const dateInputs = doc.querySelectorAll('div[data-testid="stDateInput"] input');
         dateInputs.forEach(input => {
             input.setAttribute('inputmode', 'none'); 
             input.setAttribute('autocomplete', 'off');
         });
+
+        // 2. [需求1] 項目輸入完 -> 自動跳金額
+        const itemInput = doc.querySelector('input[aria-label="項目"]');
+        const amountInput = doc.querySelector('input[aria-label="金額"]');
+
+        if (itemInput && amountInput && !itemInput.dataset.enterBound) {
+            itemInput.addEventListener('keydown', (e) => {
+                // 偵測 Enter 鍵 (電腦) 或 Go/Next 鍵 (手機虛擬鍵盤代碼通常也是 13)
+                if (e.key === 'Enter' || e.keyCode === 13) {
+                    e.preventDefault(); 
+                    amountInput.focus(); 
+                }
+            });
+            itemInput.dataset.enterBound = 'true';
+        }
     }
     setInterval(setupInteractions, 1000);
 </script>
@@ -87,7 +98,6 @@ if 'page' not in st.session_state:
 #  資料庫操作
 # ==========================================
 def load_data():
-    # 優化：ttl=5 代表 5 秒內重複讀取會用快取，減少卡頓
     try:
         df = conn.read(ttl=5)
     except Exception:
@@ -108,7 +118,7 @@ def load_data():
 
 def save_new_record(new_record_df):
     try:
-        full_df = conn.read(ttl=0) # 寫入前強制讀最新的
+        full_df = conn.read(ttl=0)
     except Exception:
         full_df = pd.DataFrame(columns=["ID", "日期", "項目", "類型", "金額", "備註"])
 
@@ -119,11 +129,15 @@ def save_new_record(new_record_df):
     updated_df = pd.concat([full_df, new_record_df], ignore_index=True)
     conn.update(data=updated_df)
 
-def delete_record(record_id):
+# [需求2] 批量刪除功能
+def delete_multiple_records(id_list):
+    if not id_list:
+        return
     full_df = conn.read(ttl=0)
-    full_df = full_df[full_df["ID"] != record_id]
+    # 篩選掉 ID 在 id_list 裡面的資料
+    full_df = full_df[~full_df["ID"].isin(id_list)]
     conn.update(data=full_df)
-    st.toast("已刪除", icon="🗑️")
+    st.toast(f"已刪除 {len(id_list)} 筆紀錄", icon="🗑️")
     st.rerun()
 
 # ==========================================
@@ -141,16 +155,34 @@ def show_home_page():
 
     if not df.empty:
         df["日期"] = pd.to_datetime(df["日期"])
-        months = sorted(df["日期"].dt.to_period("M").astype(str).unique(), reverse=True)
         
-        c_m, _ = st.columns([1, 1])
+        # [需求3] 預設選取當月
+        all_months = sorted(df["日期"].dt.to_period("M").astype(str).unique(), reverse=True)
+        current_month_str = datetime.now().strftime("%Y-%m")
+        
+        # 判斷預設索引：如果當月有在資料裡，就預設選它，否則選最新的
+        default_index = 0
+        if current_month_str in all_months:
+            default_index = all_months.index(current_month_str) + 1 # +1 是因為第一個選項是 "所有時間"
+        
+        c_m, c_filter_ph = st.columns([1.2, 0.8]) 
         with c_m:
-            sel_month = st.selectbox("月份", ["所有時間"] + months, label_visibility="collapsed")
+            sel_month = st.selectbox(
+                "月份", 
+                ["所有時間"] + all_months, 
+                index=default_index, # 設定預設值
+                label_visibility="collapsed"
+            )
         
+        # 資料篩選
         df_show = df.copy()
         if sel_month != "所有時間":
             df_show = df_show[df_show["日期"].dt.to_period("M").astype(str) == sel_month]
             
+        # [需求3] 顯示帶有月份標題的總額
+        display_title = f"{sel_month} 消費總覽" if sel_month != "所有時間" else "總消費總覽"
+        st.caption(display_title) # 小標題提示目前區間
+        
         cash = df_show[df_show["類型"]=="現金"]["金額"].sum()
         card = df_show[df_show["類型"]=="信用卡"]["金額"].sum()
         
@@ -160,16 +192,15 @@ def show_home_page():
         
         st.divider()
 
-        # [修復] 找回消失的過濾按鈕
+        # 顯示類型過濾 (移到列表上方)
         selected_type = st.segmented_control(
-            "顯示類型",
+            "過濾類型",
             options=["現金", "信用卡"],
             default=["現金", "信用卡"],
             selection_mode="multi",
             label_visibility="collapsed"
         )
         
-        # 應用類型過濾
         if not selected_type:
             df_show = pd.DataFrame(columns=df.columns)
         else:
@@ -180,53 +211,57 @@ def show_home_page():
             df_show = df_show.sort_values(by="日期", ascending=False)
             dates = df_show["日期"].dt.strftime("%Y-%m-%d").unique()
             
-            st.write("") # 間距
+            st.write("") 
 
-            for d in dates:
-                d_obj = datetime.strptime(d, "%Y-%m-%d")
-                w_str = ["週一","週二","週三","週四","週五","週六","週日"][d_obj.weekday()]
-                st.markdown(f'<div class="date-header">{d} ({w_str})</div>', unsafe_allow_html=True)
+            # [需求2] 使用 Form 來做批量刪除
+            # 將整個列表包在一個 Form 裡，這樣勾選不會一直重整，按最後的按鈕才會送出
+            with st.form("batch_delete_form", clear_on_submit=True):
                 
-                day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
-                
-                for _, row in day_data.iterrows():
-                    # [修復] 列表排版：左邊資訊 (85%)，右邊刪除框 (15%)
-                    c_txt, c_del = st.columns([6, 1], vertical_alignment="center")
+                # 收集要刪除的 ID
+                ids_to_delete = []
+
+                for d in dates:
+                    d_obj = datetime.strptime(d, "%Y-%m-%d")
+                    w_str = ["週一","週二","週三","週四","週五","週六","週日"][d_obj.weekday()]
+                    st.markdown(f'<div class="date-header">{d} ({w_str})</div>', unsafe_allow_html=True)
                     
-                    with c_txt:
-                        icon = "💵" if row['類型'] == "現金" else "💳"
-                        note = f"<div class='list-item-sub'>{row['備註']}</div>" if row['備註'] else ""
-                        # [修復] HTML 結構優化
-                        st.markdown(
-                            f"""
-                            <div class='list-item-text'>
-                                <span style='margin-right:8px;'>{icon}</span>
-                                <span style='flex-grow:1;'>{row['項目']}</span>
-                                <code>${row['金額']:,}</code>
-                            </div>
-                            {note}
-                            """, 
-                            unsafe_allow_html=True
-                        )
+                    day_data = df_show[df_show["日期"].dt.strftime("%Y-%m-%d") == d]
                     
-                    with c_del:
-                        is_checked = st.checkbox("刪", key=f"d_{row['ID']}", label_visibility="collapsed")
-                    
-                    # [修復] 刪除確認區域
-                    if is_checked:
-                        # 使用 container 讓背景稍微不同，或是直接顯示文字
-                        with st.container():
-                            st.markdown("<span style='color:red; font-size:0.8rem; font-weight:bold;'>確定刪除?</span>", unsafe_allow_html=True)
-                            # 按鈕加大一點
-                            if st.button("是", key=f"cf_{row['ID']}", type="secondary", use_container_width=True):
-                                delete_record(row['ID'])
-                                
-                    st.markdown("<hr style='margin: 4px 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+                    for _, row in day_data.iterrows():
+                        # [需求4] 強制單行排版
+                        # 比例分配：圖示(1.2) | 項目(4.3) | 金額(2.5) | 勾選框(1)
+                        c_icon, c_item, c_amt, c_chk = st.columns([1.2, 4.3, 2.5, 1], vertical_alignment="center")
+                        
+                        with c_icon:
+                            st.write("💵" if row['類型'] == "現金" else "💳")
+                        
+                        with c_item:
+                            # 項目名稱 (如果有備註，顯示在同一格但換行，保持排版整齊)
+                            item_text = f"**{row['項目']}**"
+                            if row['備註']:
+                                item_text += f"<br><span style='color:grey;font-size:0.8rem'>{row['備註']}</span>"
+                            st.markdown(item_text, unsafe_allow_html=True)
+                            
+                        with c_amt:
+                            st.markdown(f"**${row['金額']:,}**")
+                            
+                        with c_chk:
+                            # 收集勾選狀態
+                            if st.checkbox("刪", key=f"del_{row['ID']}", label_visibility="collapsed"):
+                                ids_to_delete.append(row['ID'])
+                        
+                        st.markdown("<hr style='margin: 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+
+                st.write("")
+                st.write("")
+                # 批量刪除按鈕
+                if st.form_submit_button("🗑️ 刪除選取項目", type="primary", use_container_width=True):
+                    if ids_to_delete:
+                        delete_multiple_records(ids_to_delete)
+                    else:
+                        st.warning("請先勾選要刪除的項目")
         else:
-             if selected_type:
-                 st.info("📭 此區間無資料")
-             else:
-                 st.warning("⚠️ 請選擇至少一種類型")
+             st.info("📭 此區間無資料")
     else:
         st.info("目前沒有紀錄，點擊右上角新增！")
 
@@ -244,7 +279,9 @@ def show_add_page():
     with st.form("add"):
         date = st.date_input("日期", datetime.now())
         cat = st.segmented_control("方式", ["現金", "信用卡"], default="現金")
-        item = st.text_input("項目", placeholder="例如: 午餐")
+        # [需求1] JS 會抓取這個 aria-label="項目"
+        item = st.text_input("項目", placeholder="例如: 午餐") 
+        # [需求1] JS 會抓取這個 aria-label="金額"
         amt = st.number_input("金額", min_value=1, value=None)
         note = st.text_area("備註")
         
